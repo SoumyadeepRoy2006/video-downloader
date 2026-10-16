@@ -1,5 +1,6 @@
 from typing import Literal
 from .dictionaries import VideoInfo, FormatInfo, SimplifiedSize
+from threading import Lock
 from .objects import Event, VideoInfoLoader, ThumbnailLoader
 from .methods import simplify_size
 from PIL import Image
@@ -236,8 +237,8 @@ class FormatListWindow(Frame):
     container: ScrollableFrame
     
     def __init__(self, *args, **kwargs) -> None:
-        self.child_elements = []
         super().__init__(*args, **kwargs)
+        self.child_elements = []
 
         self.container = ScrollableFrame(self, fg_color="transparent")
         self.container._scrollbar.grid_forget()
@@ -254,7 +255,6 @@ class FormatListWindow(Frame):
                 self.add(i)
             self.container.pack(fill="both", expand=True)
 
-
     def clear(self) -> None:
         if len(self.child_elements) > 0:
             self.container.pack_forget()
@@ -266,6 +266,9 @@ class FormatListWindow(Frame):
 
 
 class MainApp(CTk):
+    search_steps: int
+    lock: Lock
+
     main_frame: Frame
     frame_search: Frame
     frame_results: Frame
@@ -279,6 +282,9 @@ class MainApp(CTk):
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
+        self.search_steps = 0
+        self.lock = Lock()
+
         self.geometry("1000x700")
 
         self.grid_columnconfigure(0, weight=1)
@@ -305,7 +311,6 @@ class MainApp(CTk):
         self.frame_left.pack_propagate(False)
         self.frame_right = Frame(self.frame_results, corner_radius=0, fg_color="transparent")
 
-
         self.search_bar = SearchBar(self.frame_search, corner_radius=0, fg_color="transparent")
         self.search_bar.on_query += self.search
         
@@ -323,25 +328,42 @@ class MainApp(CTk):
         self.video_info_window.pack(fill="x", padx=(20,0), pady=50)
         self.format_info_window.pack(fill="both", expand=True, pady=50)
 
+    def _complete_search_step(self) -> None:
+        """
+        1 load video info +1
+        2 load thumbnail +1
+        3 load formats +1
+        turns on search again
+        resets to 0
+        """
+        with self.lock:
+            self.search_steps += 1
+            if self.search_steps >= 3:
+                self.search_bar.set_active(True)
+                self.search_steps = 0
+
     def _load_thumbnail(self, image: ImageFile) -> None:
         self.video_info_window.set_thumbnail(image)
+        self._complete_search_step()
 
     def _load_video_info(self, info: VideoInfo) -> None:
         self.video_info_window.set_info(info)
 
         load_thumbnail = ThumbnailLoader(info["thumbnail"])
         load_thumbnail.on_complete += self._load_thumbnail
+        load_thumbnail.on_complete += lambda x: self._complete_search_step()
         load_thumbnail.run()
 
     def _load_video_formats(self, info: VideoInfo) -> None:
         self.format_info_window.add(info["formats"])
+        self._complete_search_step()
 
     def search(self, query: str) -> None:
         if not query == "":
             self.video_info_window.clear()
             self.format_info_window.clear()
+            self.search_steps = 0
             load_info = VideoInfoLoader(query)
             load_info.on_complete += self._load_video_info
             load_info.on_complete += self._load_video_formats
-            load_info.on_complete += lambda _: self.search_bar.set_active(True)
             load_info.run()
