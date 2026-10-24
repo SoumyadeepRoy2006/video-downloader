@@ -1,12 +1,13 @@
 from typing import Self, NoReturn
 from collections.abc import Callable
 from abc import ABC, abstractmethod as abstract
+from pathlib import Path
 from threading import Thread
 import requests as request
 from io import BytesIO
 from PIL import Image
 from .customexceptions import ProcessCancellationException
-from .methods import get_info
+from .methods import get_info, download_video
 
 
 class Event:
@@ -59,8 +60,12 @@ class VideoInfoLoader(Process):
         self.query = query
 
     def _run(self) -> None:
-        info = get_info(self.query)
-        self.on_complete.invoke(info)
+        try:
+            info = get_info(self.query)
+            self.on_complete.invoke(info)
+        except Exception as e:
+            self.on_complete.invoke()
+            raise e
 
 
 class ThumbnailLoader(Process):
@@ -71,13 +76,36 @@ class ThumbnailLoader(Process):
         self.url = url
 
     def _run(self) -> None:
-        result = request.get(self.url)
-        result.raise_for_status()
+        try:
+            result = request.get(self.url)
+            result.raise_for_status()
 
-        if result.status_code == 200:
-            data = BytesIO(result.content)
-            image = Image.open(data)
-            self.on_complete.invoke(image)
-        else:
-            self.on_complete.invoke(None)
-        self.running = False
+            if result.status_code == 200:
+                data = BytesIO(result.content)
+                image = Image.open(data)
+                self.on_complete.invoke(image)
+            else:
+                self.on_complete.invoke()
+        except Exception as e:
+            self.on_complete.invoke()
+            raise e
+
+
+class Downloader(Process):
+    url_or_id: str
+    format_id: int | str
+    download_location: Path | str
+
+    def __init__(self, url_or_id: str, format_id: int | str, download_location: Path | str) -> None:
+        super().__init__()
+        self.url_or_id = url_or_id
+        self.format_id = format_id
+        self.download_location = download_location
+
+    def _run(self) -> None:
+        try:
+            download_video(self.url_or_id, self.format_id, self.download_location)
+        except Exception as e:
+            raise e
+        finally:
+            self.on_complete.invoke()

@@ -1,7 +1,8 @@
+from pathlib import Path
 from typing import Literal
 from .dictionaries import VideoInfo, FormatInfo, SimplifiedSize
 from threading import Lock
-from .objects import Event, VideoInfoLoader, ThumbnailLoader
+from .objects import Event, VideoInfoLoader, ThumbnailLoader, Downloader
 from .methods import simplify_size
 from PIL import Image
 from PIL.ImageFile import ImageFile
@@ -146,11 +147,14 @@ class VideoInfoWindow(Frame):
 
 
 class FormatInfoWindow(Frame):
+    id: int | str
     resolution: str
     res: int
     fps: int
     size: int
     bitrate: float
+
+    on_select: Event
 
     details_main_window: Frame
 
@@ -167,11 +171,13 @@ class FormatInfoWindow(Frame):
     download_button: Button
 
     def __init__(self, *args, info: FormatInfo, **kwargs) -> None:
+        self.id = info["id"]
         self.resolution = info["resolution"]
         self.res = info["res"]
         self.fps = info["frame_rate"]
         self.size = info["size"]
         self.bitrate = info["bitrate"]
+        self.on_select = Event()
         simplified_size: SimplifiedSize = simplify_size(self.size)
         
         super().__init__(*args, **kwargs)
@@ -207,6 +213,7 @@ class FormatInfoWindow(Frame):
         self.bitrate_label = Label(self.secondary_details_window, height=0, width=0, text=f"Bitrate: {int(self.bitrate)} kbps", font=("Segoe UI", 12))
 
         self.download_button = Button(self, text="Download", font=("Segoe UI", 13, "bold"), text_color="white", height=30, width=80, corner_radius=15, fg_color="#D00030")
+        self.download_button.configure(command=lambda: self.on_select.invoke(self.id))
 
         self.details_main_window.grid(row=0, column=0, sticky="ewns", padx=(20, 0))
 
@@ -233,12 +240,16 @@ class FormatInfoWindow(Frame):
 
 
 class FormatListWindow(Frame):
+    url: str
     child_elements: list[FormatInfoWindow]
     container: ScrollableFrame
+
+    on_select: Event
     
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.child_elements = []
+        self.on_select = Event()
 
         self.container = ScrollableFrame(self, fg_color="transparent")
         self.container._scrollbar.grid_forget()
@@ -248,6 +259,7 @@ class FormatListWindow(Frame):
         if type(info) == dict:
             new_window = FormatInfoWindow(self.container, info=info, height=60)
             new_window.pack(fill="x", padx=20, pady=5)
+            new_window.on_select += lambda format_id: self.on_select.invoke(self.url, format_id)
             self.child_elements.append(new_window)
         elif type(info) == list:
             self.container.pack_forget()
@@ -265,8 +277,27 @@ class FormatListWindow(Frame):
             self.container.pack(fill="both", expand=True)
 
 
+class DownloadProcessOverlay(Frame):
+    label: Label
+    cancel_button: Button
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure((0,1), weight=1)
+        self.grid_propagate(False)
+
+        self.label = Label(self, text="Downloading...", font=("Segoe UI", 15))
+        self.cancel_button = Button(self, text="Cancel", font=("Segoe UI", 12), corner_radius=20, state="disabled") # functionality coming soon
+
+        self.label.grid(column=0, row=0, sticky="s")
+        self.cancel_button.grid(column=0, row=1, sticky="n")
+
+
 class MainApp(CTk):
+    download_location: Path
     search_steps: int
+    busy: bool
     lock: Lock
 
     main_frame: Frame
@@ -280,9 +311,13 @@ class MainApp(CTk):
     video_info_window: VideoInfoWindow
     format_info_window: FormatListWindow
 
-    def __init__(self, *args, **kwargs) -> None:
+    busy_overlay: DownloadProcessOverlay
+
+    def __init__(self, *args, download_location: Path, **kwargs) -> None:
         super().__init__(*args, **kwargs)
+        self.download_location = download_location
         self.search_steps = 0
+        self.busy = False
         self.lock = Lock()
 
         self.geometry("1000x700")
@@ -316,6 +351,9 @@ class MainApp(CTk):
         
         self.video_info_window = VideoInfoWindow(self.frame_left, fg_color="transparent")
         self.format_info_window = FormatListWindow(self.frame_right, fg_color="transparent")
+        self.format_info_window.on_select += self.download
+
+        self.busy_overlay = DownloadProcessOverlay(self)
 
         self.main_frame.grid(row=0, column=0, sticky="ewns")
         self.frame_search.grid(row=0, column=0, sticky="ewns")
@@ -327,6 +365,7 @@ class MainApp(CTk):
         self.search_bar.grid(row=0, column=1, sticky="ewns")
         self.video_info_window.pack(fill="x", padx=(20,0), pady=50)
         self.format_info_window.pack(fill="both", expand=True, pady=50)
+        # self.busy_overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
 
     def _complete_search_step(self) -> None:
         """
@@ -342,24 +381,34 @@ class MainApp(CTk):
                 self.search_bar.set_active(True)
                 self.search_steps = 0
 
-    def _load_thumbnail(self, image: ImageFile) -> None:
-        self.video_info_window.set_thumbnail(image)
+    def _load_thumbnail(self, image: ImageFile | None = None) -> None:
+        if image:
+            self.video_info_window.set_thumbnail(image)
         self._complete_search_step()
 
-    def _load_video_info(self, info: VideoInfo) -> None:
-        self.video_info_window.set_info(info)
+    def _load_video_info(self, info: VideoInfo | None = None) -> None:
+        if info:
+            self.video_info_window.set_info(info)
 
-        load_thumbnail = ThumbnailLoader(info["thumbnail"])
-        load_thumbnail.on_complete += self._load_thumbnail
-        load_thumbnail.on_complete += lambda x: self._complete_search_step()
-        load_thumbnail.run()
+            load_thumbnail = ThumbnailLoader(info["thumbnail"])
+            load_thumbnail.on_complete += self._load_thumbnail
+            load_thumbnail.on_complete += lambda x: self._complete_search_step()
+            load_thumbnail.run()
+        else:
+            self._complete_search_step()
 
-    def _load_video_formats(self, info: VideoInfo) -> None:
-        self.format_info_window.add(info["formats"])
+    def _load_video_formats(self, info: VideoInfo | None = None) -> None:
+        if info:
+            self.format_info_window.url = info["id"]
+            self.format_info_window.add(info["formats"])
         self._complete_search_step()
+
+    def _restore_control(self) -> None:
+        self.busy = False
+        self.busy_overlay.place_forget()
 
     def search(self, query: str) -> None:
-        if not query == "":
+        if not query == "" and not self.busy:
             self.video_info_window.clear()
             self.format_info_window.clear()
             self.search_steps = 0
@@ -367,3 +416,12 @@ class MainApp(CTk):
             load_info.on_complete += self._load_video_info
             load_info.on_complete += self._load_video_formats
             load_info.run()
+
+    def download(self, url_or_id:str, format_id: int | str) -> None:
+        if not self.busy:
+            self.busy = True
+            self.busy_overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
+
+            downloader = Downloader(url_or_id, format_id, self.download_location)
+            downloader.on_complete += self._restore_control
+            downloader.run()

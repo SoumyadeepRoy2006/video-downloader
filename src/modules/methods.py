@@ -1,14 +1,14 @@
 from typing import Any, Literal, TYPE_CHECKING, Optional
-from .customexceptions import DownloadCancellationException as CancelException
-from .dictionaries import VideoInfo, FormatInfo, SimplifiedSize
 if TYPE_CHECKING:
     from yt_dlp.extractor.common import _InfoDict
+    from yt_dlp import _Params
 
-import pathlib
-import yt_dlp
+from .customexceptions import DownloadCancellationException as CancelException
+from .dictionaries import VideoInfo, FormatInfo, SimplifiedSize
+from pathlib import Path
 from yt_dlp import YoutubeDL
 
-SRC = pathlib.Path(__file__).parent.parent
+SRC = Path(__file__).parent.parent
 FFMPEG_PATH = SRC / "bin"
 cancellation: bool = False
 
@@ -44,9 +44,9 @@ def is_digit(string_value:str) -> bool:
         return False
 
 def get_info(video_url: str) -> VideoInfo:
-    params: yt_dlp._Params = {
+    params: _Params = {
         "skip_download": "True",
-        "quiet": False,
+        "quiet": True,
         "no_warnings": True,
         "extract_flat": True,
     }
@@ -84,20 +84,20 @@ def get_info(video_url: str) -> VideoInfo:
     info["formats"].sort(key=lambda x: (x["res"], x["size"]), reverse=True)
     return info
 
-def download_video(video_url: str, format_id: int | str) -> None:
-    params: yt_dlp._Params = {
+def download_video(video_url: str, format_id: int | str, download_location: Path | str) -> None:
+    params: _Params = {
         "format": f"{format_id}+ba",
         "merge_output_format": "mp4",
-        "outtmpl": "tests/download/%(title)s.%(ext)s",
+        "outtmpl":  str(download_location) + "/%(title)s.%(ext)s",
         "ffmpeg_location": str(FFMPEG_PATH),
         "noprogress": True,
         "no_warnings": True,
+        "quiet": True
     }
 
     with YoutubeDL(params) as ytdlp:
         try:
             ytdlp.download([video_url])
-            print("Finished")
         except KeyboardInterrupt:
             print("Download interrupted")
         except CancelException:
